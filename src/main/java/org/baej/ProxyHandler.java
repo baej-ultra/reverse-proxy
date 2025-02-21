@@ -5,6 +5,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -20,10 +22,10 @@ public class ProxyHandler {
         this.destinationHost = destinationHost;
         this.destinationPort = destinationPort;
 
-        run();
+        start();
     }
 
-    private void run() {
+    private void start() {
         try (ServerSocket serverSocket = new ServerSocket(localPort)) {
             System.out.printf("Proxy to %s:%d started on port %d\n", destinationHost, destinationPort, localPort);
 
@@ -34,52 +36,81 @@ public class ProxyHandler {
                 socket.setSoTimeout(60_000);
 
                 // Handle new socket connection
-                executorService.submit(() -> handleProxy(socket));
+                executorService.submit(new SocketRelay(socket));
             }
         } catch (IOException e) {
             System.out.println("Proxy exception " + e.getMessage());
+        } finally {
+            executorService.shutdownNow();
         }
     }
 
-    private void handleProxy(Socket clientSocket) {
-        try (clientSocket;
-             Socket apiSocket = new Socket(destinationHost, destinationPort);
-             var apiReader = apiSocket.getInputStream();
-             var apiWriter = apiSocket.getOutputStream();
+    private class SocketRelay implements Runnable {
 
-             var clientReader = clientSocket.getInputStream();
-             var clientWriter = clientSocket.getOutputStream();
-        ) {
+        private final List<Thread> threads = new ArrayList<>(2);
+        private final Socket clientSocket;
 
-            Thread clientToApi = messageRelay(clientReader, apiWriter);
-            Thread apiToClient = messageRelay(apiReader, clientWriter);
-
-            // Start relays
-            clientToApi.start();
-            apiToClient.start();
-
-            // Wait for relays
-            clientToApi.join();
-            apiToClient.join();
-        } catch (IOException | InterruptedException e) {
-            e.printStackTrace();
+        public SocketRelay(Socket clientSocket) {
+            this.clientSocket = clientSocket;
         }
-    }
 
-    private Thread messageRelay(InputStream inputStream, OutputStream outputStream) {
-        return new Thread(
-                () -> {
-                    byte[] buffer = new byte[1024];
-                    int bytesRead;
-                    try {
-                        while ((bytesRead = inputStream.read(buffer)) != -1) {
-                            outputStream.write(buffer,0,bytesRead);
-                            outputStream.flush();
+        @Override
+        public void run() {
+            try (clientSocket;
+                 Socket apiSocket = new Socket(destinationHost, destinationPort);
+                 var apiReader = apiSocket.getInputStream();
+                 var apiWriter = apiSocket.getOutputStream();
+                 var clientReader = clientSocket.getInputStream();
+                 var clientWriter = clientSocket.getOutputStream();
+            ) {
+
+                // Spawn threads
+                Thread clientToApi = spawnRelayThread(clientReader, apiWriter);
+                Thread apiToClient = spawnRelayThread(apiReader, clientWriter);
+
+                // Add threads for tracking
+                threads.add(clientToApi);
+                threads.add(apiToClient);
+
+                // Start relays
+                clientToApi.start();
+                apiToClient.start();
+
+                // Wait for relays
+                clientToApi.join(60_000);
+                apiToClient.join(60_000);
+            } catch (IOException | InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+
+        private Thread spawnRelayThread(InputStream inputStream, OutputStream outputStream) {
+            return new Thread(
+                    () -> {
+                        byte[] buffer = new byte[1024];
+                        int bytesRead;
+                        // Relay inputStream to the other guy
+                        try {
+                            while ((bytesRead = inputStream.read(buffer)) != -1) {
+                                outputStream.write(buffer, 0, bytesRead);
+                                outputStream.flush();
+
+                                if (Thread.currentThread().isInterrupted()) {
+                                    break;
+                                }
+                            }
+                        } catch (IOException e) {
+                            // Interrupt the other thread on IOException
+                            for (Thread thread : threads) {
+                                thread.interrupt();
+                                try {
+                                    thread.join(1000);
+                                } catch (InterruptedException ignored) {
+                                }
+                            }
                         }
-                    } catch (IOException e) {
-                        e.printStackTrace();
                     }
-                }
-        );
+            );
+        }
     }
 }
