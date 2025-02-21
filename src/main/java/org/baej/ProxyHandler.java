@@ -85,32 +85,30 @@ public class ProxyHandler {
         }
 
         private Thread spawnRelayThread(InputStream inputStream, OutputStream outputStream) {
-            return new Thread(
-                    () -> {
-                        byte[] buffer = new byte[1024];
-                        int bytesRead;
-                        // Relay inputStream to the other guy
-                        try {
-                            while ((bytesRead = inputStream.read(buffer)) != -1) {
-                                outputStream.write(buffer, 0, bytesRead);
-                                outputStream.flush();
+            return new Thread(() -> {
+                byte[] buffer = new byte[1024];
+                int bytesRead;
+                // Relay inputStream to the other guy
+                try {
+                    while ((bytesRead = inputStream.read(buffer)) != -1) {
+                        outputStream.write(buffer, 0, bytesRead);
+                        outputStream.flush();
 
-                                if (Thread.currentThread().isInterrupted()) {
-                                    break;
-                                }
-                            }
-                        } catch (IOException e) {
-                            // Interrupt the other thread on IOException
-                            for (Thread thread : threads) {
-                                thread.interrupt();
-                                try {
-                                    thread.join(1000);
-                                } catch (InterruptedException ignored) {
-                                }
-                            }
+                        if (Thread.currentThread().isInterrupted()) {
+                            break;
                         }
                     }
-            );
+                } catch (IOException e) {
+                    // Interrupt the other thread on IOException
+                    for (Thread thread : threads) {
+                        thread.interrupt();
+                        try {
+                            thread.join(1000);
+                        } catch (InterruptedException ignored) {
+                        }
+                    }
+                }
+            });
         }
     }
 }
